@@ -69,7 +69,10 @@ Add the following configuration to your MCP settings file (usually `claude_deskt
         "run",
         "python",
         "server.py"
-      ]
+      ],
+      "env": {
+        "GEMINI_API_KEY": "your-api-key-here"
+      }
     }
   }
 }
@@ -114,9 +117,16 @@ This will:
 
 If you prefer a visual interface to test the server's tools and observe the `stdio` communication, you can use the official `@modelcontextprotocol/inspector`. Because the server relies on standard `stdio` transport, it is fully compatible.
 
-Run the inspector by wrapping the server command:
+Run the inspector by wrapping the server command and passing your API key:
+
+**On Mac/Linux:**
 ```bash
-npx @modelcontextprotocol/inspector uv --directory /path/to/claudavity run python server.py
+GEMINI_API_KEY="your-api-key-here" npx @modelcontextprotocol/inspector uv --directory /path/to/claudavity run python server.py
+```
+
+**On Windows (PowerShell):**
+```powershell
+$env:GEMINI_API_KEY="your-api-key-here"; npx @modelcontextprotocol/inspector uv --directory /path/to/claudavity run python server.py
 ```
 *(Replace `/path/to/claudavity` with the absolute path to your cloned repository)*
 
