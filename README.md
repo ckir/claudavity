@@ -110,6 +110,18 @@ This will:
 3. Spin up an isolated Git worktree (`.agent/worktrees/task-...`).
 4. Execute the sub-agent, merge the worktree, and return the final JSON payload.
 
+### Using the Official MCP Inspector
+
+If you prefer a visual interface to test the server's tools and observe the `stdio` communication, you can use the official `@modelcontextprotocol/inspector`. Because the server relies on standard `stdio` transport, it is fully compatible.
+
+Run the inspector by wrapping the server command:
+```bash
+npx @modelcontextprotocol/inspector uv --directory /path/to/claudavity run python server.py
+```
+*(Replace `/path/to/claudavity` with the absolute path to your cloned repository)*
+
+This will launch a local web app where you can manually invoke the `delegate_to_antigravity` tool and watch the real-time execution logs.
+
 ## 📊 Telemetry & Governance
 
 - **Governance (`SKILL.md`)**: The sub-agent is strictly governed by `.agent/skills/claude_subagent/SKILL.md`. This forces the sub-agent to return a precise JSON schema, suppressing conversational bloat.
