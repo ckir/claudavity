@@ -1,0 +1,6 @@
+.git/
+.venv/
+__pycache__/
+*.pyc
+.agent/telemetry.db
+.agent/worktrees/

@@ -1,0 +1,16 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# IDEs
+.vscode/
+.idea/
+
+# Agt/MCP specific
+.agent/telemetry.db
+.agent/worktrees/
+
+# OS
+.DS_Store
+Thumbs.db
