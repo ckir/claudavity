@@ -41,6 +41,12 @@ This project uses modern Python standards, managed by [uv](https://docs.astral.s
    ```bash
    uv run lefthook install
    ```
+4. **Injecting the SKILL Protocol**: The bridge relies on a strictly defined JSON output format. For any target workspace you want the bridge to operate on, you must copy the provided `SKILL.md` from this repository into the target workspace:
+   ```bash
+   # Inside your target project workspace
+   mkdir -p .agent/skills/claude_subagent
+   cp /path/to/claudavity/SKILL.md .agent/skills/claude_subagent/SKILL.md
+   ```
 
 ## 🔌 Registering as an MCP Server
 
