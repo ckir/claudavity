@@ -42,6 +42,51 @@ This project uses modern Python standards, managed by [uv](https://docs.astral.s
    uv run lefthook install
    ```
 
+## 🔌 Registering as an MCP Server
+
+To use this bridge, you must configure your AI CLI (e.g., `claude-cli` or `antigravity-cli`) to load it as an MCP server.
+
+### For `claude-cli` (or Claude Desktop)
+Add the following configuration to your MCP settings file (usually `claude_desktop_config.json` or `mcp.json` depending on your CLI wrapper):
+
+```json
+{
+  "mcpServers": {
+    "agy-mcp-bridge": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/absolute/path/to/claudavity",
+        "run",
+        "python",
+        "server.py"
+      ]
+    }
+  }
+}
+```
+
+### For `antigravity-cli`
+Antigravity discovers MCP servers in its application data directory.
+To register it:
+1. Create a directory for the server: `~/.gemini/antigravity-cli/mcp/agy-mcp-bridge`
+2. In this directory, define your tool schemas and point the execution command to `uv run python server.py` in the `claudavity` directory.
+
+### 🔍 Verifying the Installation
+
+Once configured, restart your CLI and verify the tool is loaded.
+
+**Claude CLI:**
+```bash
+# Example command depending on your specific CLI tool
+/mcp list
+```
+*(You should see `agy-mcp-bridge` listed with the `delegate_to_antigravity` tool).*
+
+**Antigravity CLI:**
+You can ask the agent to list its available tools, or look for the eager tool name:
+`mcp_agy-mcp-bridge_delegate_to_antigravity`.
+
 ## 🧪 Testing the Integration
 
 You don't need to configure an external MCP inspector to test if the bridge works. A standalone test client is included!
