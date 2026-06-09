@@ -41,7 +41,10 @@ This project uses modern Python standards, managed by [uv](https://docs.astral.s
    ```bash
    uv run lefthook install
    ```
-4. **Injecting the SKILL Protocol**: The bridge relies on a strictly defined JSON output format. For any target workspace you want the bridge to operate on, you must copy the provided `SKILL.md` from this repository into the target workspace:
+4. **Injecting the SKILL Protocol**: What is `SKILL.md` and why is it needed?
+   The `SKILL.md` file contains a set of hardcoded system instructions that govern the background sub-agent. Without it, the sub-agent might respond with conversational text, markdown formatting, or open-ended questions. `SKILL.md` enforces a strict rule: **the sub-agent must only output a deterministic, machine-readable JSON schema**. This protects the master agent from context bloat and ensures the MCP server can predictably parse the task result.
+   
+   For any target workspace you want the bridge to operate on, you must copy the provided `SKILL.md` from this repository into the target workspace:
    ```bash
    # Inside your target project workspace
    mkdir -p .agent/skills/claude_subagent
