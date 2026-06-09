@@ -4,17 +4,19 @@ import sys
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+
 async def main():
     # Define how to start our MCP server subprocess
     # We use the current python executable to run server.py
+    env = os.environ.copy()
+    env["MOCK_AGENT_RESPONSE"] = '{"status": "completed", "summary": "Success!"}'
+
     server_params = StdioServerParameters(
-        command=sys.executable,
-        args=["server.py"],
-        env=os.environ.copy()
+        command=sys.executable, args=["server.py"], env=env
     )
 
     print("Starting MCP Client and connecting to server.py...")
-    
+
     # Establish the stdio connection
     async with stdio_client(server_params) as (read, write):
         async with ClientSession(read, write) as session:
@@ -28,10 +30,12 @@ async def main():
 
             # Use the current directory as the target workspace
             target_directory = os.path.abspath(".")
-            
+
             print(f"Calling 'delegate_to_antigravity' in {target_directory}...")
-            print("This will take a moment as the sub-agent creates a worktree and executes the task.\n")
-            
+            print(
+                "This will take a moment as the sub-agent creates a worktree and executes the task.\n"
+            )
+
             try:
                 # Execute the tool
                 result = await session.call_tool(
@@ -39,19 +43,20 @@ async def main():
                     arguments={
                         "task_prompt": "Create a dummy file named 'hello_from_subagent.txt' containing 'It works!'",
                         "target_dir": target_directory,
-                        "timeout_seconds": 120
-                    }
+                        "timeout_seconds": 120,
+                    },
                 )
-                
+
                 print("====================================")
                 print("Task Completed!")
                 print("JSON Result Payload:")
                 for content in result.content:
                     print(content.text)
                 print("====================================")
-                
+
             except Exception as e:
                 print(f"\nError calling tool: {e}")
+
 
 if __name__ == "__main__":
     asyncio.run(main())
