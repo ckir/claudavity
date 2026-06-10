@@ -6,6 +6,7 @@ __pycache__/
 # IDEs
 .vscode/
 .idea/
+.playwright-cli/
 
 # Agt/MCP specific
 .agent/telemetry.db
