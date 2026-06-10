@@ -20,6 +20,46 @@ logging.basicConfig(
 )
 logging.info("Starting server")
 
+
+def extract_json(text: str) -> dict:
+    """Parse a JSON object from agent output that may be wrapped in markdown fences
+    or surrounded by prose. Agents rarely emit *pure* JSON, so we scan for the first
+    brace-balanced object (respecting string literals) and parse exactly that — which
+    is robust to trailing commentary that contains its own braces."""
+    text = text.strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    start = text.find("{")
+    if start == -1:
+        raise json.JSONDecodeError("no '{' in agent output", text, 0)
+
+    depth = 0
+    in_str = False
+    esc = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+        elif ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return json.loads(text[start : i + 1])
+
+    raise json.JSONDecodeError("no balanced JSON object in agent output", text, start)
+
+
 server = Server("agy-mcp-bridge")
 
 
@@ -102,8 +142,14 @@ async def handle_call_tool(
 
         else:
             config = LocalAgentConfig(
-                system_instructions=f"Load SKILL: {skill_path}. Adhere strictly to the JSON output format.",
-                working_directory=worktree_path,
+                system_instructions=(
+                    "You are a headless execution sub-agent. Execute the delegated "
+                    "task on disk, then reply with ONLY a single JSON object: "
+                    '{"status": "completed"|"failed", "summary": "...", '
+                    '"files_changed": [...]}. No prose, no markdown fences.'
+                ),
+                skills_paths=[skill_path],
+                workspaces=[worktree_path],
             )
 
             logging.info(f"Task {task_id}: Instantiating Agent")
@@ -119,10 +165,16 @@ async def handle_call_tool(
 
                     result_text = await response.text()
                     try:
-                        parsed = json.loads(result_text)
+                        parsed = extract_json(result_text)
+                        result_text = json.dumps(parsed)  # normalize to clean JSON
                         if parsed.get("status") == "completed":
                             success = True
+                        else:
+                            error_payload = f"Agent reported failure: {parsed.get('summary') or parsed}"
                     except json.JSONDecodeError:
+                        logging.error(
+                            f"Task {task_id}: unparseable agent output (full): {result_text!r}"
+                        )
                         error_payload = (
                             "Agent did not return valid JSON. Output: "
                             + result_text[:200]

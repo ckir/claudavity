@@ -46,11 +46,26 @@ async def cleanup_worktree(target_dir: str, task_id: str, success: bool = False)
     if not os.path.exists(worktree_path):
         return
 
-    # Remove the worktree forcefully
-    await run_git_command(target_dir, "worktree", "remove", "-f", worktree_path)
-
     if success:
-        # Merge the changes back to current branch
+        # The sub-agent leaves its work UNCOMMITTED in the worktree, and `git merge`
+        # only transfers committed history — so commit the worktree's changes onto
+        # its branch BEFORE removing it, otherwise the force-remove discards them.
+        await run_git_command(worktree_path, "add", "-A")
+        _, status_out, _ = await run_git_command(worktree_path, "status", "--porcelain")
+        if status_out.strip():
+            await run_git_command(
+                worktree_path,
+                "-c",
+                "user.email=agy@bridge",
+                "-c",
+                "user.name=agy-subagent",
+                "commit",
+                "-m",
+                f"agy task {task_id}",
+            )
+
+        # Now the branch carries the commit; remove the worktree and merge it back.
+        await run_git_command(target_dir, "worktree", "remove", "-f", worktree_path)
         code, out, err = await run_git_command(target_dir, "merge", branch_name)
         if code != 0:
             await run_git_command(target_dir, "merge", "--abort")
@@ -61,5 +76,6 @@ async def cleanup_worktree(target_dir: str, task_id: str, success: bool = False)
         # Delete branch after successful merge
         await run_git_command(target_dir, "branch", "-D", branch_name)
     else:
-        # If the task failed or timed out, we might want to delete the branch to avoid clutter
+        # Task failed/timed out: discard the worktree and its branch entirely.
+        await run_git_command(target_dir, "worktree", "remove", "-f", worktree_path)
         await run_git_command(target_dir, "branch", "-D", branch_name)
