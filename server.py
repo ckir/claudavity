@@ -85,9 +85,7 @@ async def handle_call_tool(
         logging.info(f"Task {task_id}: Worktree created at {worktree_path}")
 
         # Inject SKILL path
-        skill_path = os.path.join(
-            target_dir, ".agent", "skills", "claude_subagent", "SKILL.md"
-        )
+        skill_path = os.path.join(target_dir, ".agent", "mcp_bridge", "SKILL.md")
 
         mock_response = os.environ.get("MOCK_AGENT_RESPONSE")
         if mock_response:

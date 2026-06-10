@@ -47,8 +47,8 @@ This project uses modern Python standards, managed by [uv](https://docs.astral.s
    For any target workspace you want the bridge to operate on, you must copy the provided `SKILL.md` from this repository into the target workspace:
    ```bash
    # Inside your target project workspace
-   mkdir -p .agent/skills/claude_subagent
-   cp /path/to/claudavity/SKILL.md .agent/skills/claude_subagent/SKILL.md
+   mkdir -p .agent/mcp_bridge
+   cp /path/to/claudavity/SKILL.md .agent/mcp_bridge/SKILL.md
    ```
 
 ## 🔌 Registering as an MCP Server
@@ -134,7 +134,7 @@ This will launch a local web app where you can manually invoke the `delegate_to_
 
 ## 📊 Telemetry & Governance
 
-- **Governance (`SKILL.md`)**: The sub-agent is strictly governed by `.agent/skills/claude_subagent/SKILL.md`. This forces the sub-agent to return a precise JSON schema, suppressing conversational bloat.
+- **Governance (`SKILL.md`)**: The sub-agent is strictly governed by `.agent/mcp_bridge/SKILL.md`. This forces the sub-agent to return a precise JSON schema, suppressing conversational bloat. By keeping it outside the `.agent/skills/` directory, the master agent will not accidentally discover or load it.
 - **Metrics (`telemetry.db`)**: Every invocation is logged to a local SQLite database in `.agent/telemetry.db` containing run times, token usage, circuit breaker timeouts, and final statuses.
 
 ---
