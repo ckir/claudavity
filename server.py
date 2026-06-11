@@ -11,6 +11,11 @@ from google.antigravity import Agent, LocalAgentConfig
 from telemetry import init_db, log_start, log_completion
 from isolation import create_worktree, cleanup_worktree
 
+# Canonical skill governing the sub-agent's JSON output contract. Injected on every
+# delegation unless the target workspace ships its own override (see handle_call_tool).
+# Resolved relative to this file so it is independent of the process working directory.
+CANONICAL_SKILL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "SKILL.md")
+
 # Ensure .agent exists for logging
 os.makedirs(".agent", exist_ok=True)
 logging.basicConfig(
@@ -124,8 +129,11 @@ async def handle_call_tool(
         worktree_path = await create_worktree(target_dir, task_id)
         logging.info(f"Task {task_id}: Worktree created at {worktree_path}")
 
-        # Inject SKILL path
-        skill_path = os.path.join(target_dir, ".agent", "mcp_bridge", "SKILL.md")
+        # Inject SKILL path: prefer a per-workspace override, else the canonical skill.
+        override_skill = os.path.join(target_dir, ".agent", "mcp_bridge", "SKILL.md")
+        skill_path = (
+            override_skill if os.path.exists(override_skill) else CANONICAL_SKILL
+        )
 
         mock_response = os.environ.get("MOCK_AGENT_RESPONSE")
         if mock_response:
