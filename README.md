@@ -1,62 +1,150 @@
-# Claude-CLI & Antigravity (agy) MCP Bridge
+# claudavity — Claude ↔ Antigravity MCP Bridge
 
-A Python-based Model Context Protocol (MCP) server that acts as a secure, execution-focused bridge between `claude-cli` (the master orchestrator) and a background `google-antigravity` daemon (the execution sub-agent).
+A Python [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that lets a
+**master agent** (Claude Code / `claude-cli`) delegate a single, well-scoped coding task to a
+**headless [Antigravity](https://pypi.org/project/google-antigravity/) sub-agent**, run that work
+in an **isolated git worktree**, and get back a clean, deterministic JSON result — merging the
+work on success, discarding it on failure.
 
-## 🌟 Why This Exists
+It is the *automated* replacement for the manual "paste the task into Antigravity, paste the
+result back" workflow.
 
-Agentic workflows often suffer when trying to perform long-running or iterative tasks (like compiling, debugging, or deep refactoring). Terminal scraping is unstable across different OSes, and giving an LLM direct shell access often leads to context-window bloat and infinite loops.
+> **Repo note:** the folder may live under a `…/Rust/…` path for historical reasons, but this is a
+> pure-Python project.
 
-This project solves this by introducing a **Delegated Task Pattern**:
-1. **Context Protection:** `claude-cli` delegates messy codebase modifications to a background daemon and waits for a clean, deterministic JSON summary.
-2. **True Workspace Isolation:** The MCP server automatically spins up a `git worktree`, allowing the sub-agent to work in total isolation. If it succeeds, it merges back cleanly. If it fails, the worktree is destroyed.
-3. **Headless Stability:** By utilizing the official `google-antigravity` Python SDK, the bridge communicates natively, completely bypassing pseudo-terminal (PTY) flakiness over SSH or Windows.
-4. **Resilience & Guardrails:** Built-in dynamic circuit breakers (e.g., 120s timeout) prevent infinite sub-agent loops, returning "progressive error payloads" back to the master agent so it knows exactly what went wrong.
+---
 
-## 🏗️ Architecture
+## 🌟 Why this exists
 
-- **Master Agent (`claude-cli`)**: Manages high-level project logic and user interaction. Calls the `delegate_to_antigravity` MCP tool.
-- **MCP Middleware (`server.py`)**: A stateful Python process serving over `stdio` that manages Git worktrees, enforces timeouts, handles token telemetry, and dynamically loads the sub-agent's SKILL protocol.
-- **Sub-Agent (`google-antigravity`)**: Operates as a persistent background engine scoped strictly to the target workspace.
+Long-running or iterative agent work (refactors, multi-file edits, debugging loops) tends to bloat
+the master agent's context and is flaky to drive over a terminal/PTY. claudavity solves this with a
+**delegated-task pattern**:
+
+1. **Context protection** — the master delegates the messy work and waits for one compact JSON object.
+2. **True isolation** — every task runs in its own `git worktree` on a throwaway branch. Success →
+   merged back. Failure/timeout → worktree and branch destroyed.
+3. **Headless stability** — uses the official `google-antigravity` Python SDK directly, bypassing
+   pseudo-terminal flakiness.
+4. **Guardrails** — a per-task circuit-breaker timeout (default 120s) prevents runaway sub-agents.
+5. **Git is the source of truth** — the task outcome is derived from the *committed git diff* in the
+   worktree, **not** from the model's self-reported JSON (which agents intermittently truncate). The
+   model's text is used only for a best-effort one-line summary.
+
+---
+
+## 🏗️ How it works
+
+```
+  ┌────────────────────┐   delegate_to_antigravity(task, target_dir)   ┌──────────────────┐
+  │  Master agent      │ ────────────────────────────────────────────▶ │  server.py (MCP) │
+  │  (Claude Code/agy) │                                                │  over stdio      │
+  └────────────────────┘                                                └────────┬─────────┘
+                                                                                  │ 1. git worktree add (throwaway branch)
+                                                                                  │ 2. run google-antigravity Agent in the worktree,
+                                                                                  │    injecting SKILL.md (JSON output contract)
+                                                                                  │ 3. commit the worktree → derive files_changed from git
+                                                                                  │ 4. changes present? → merge branch back  (status: completed)
+                                                                                  │    no changes / failure / timeout? → discard (status: failed)
+                                                                                  ▼
+                                                                       returns {"status","summary","files_changed"}
+```
+
+- **`server.py`** — the MCP server (stdio transport). Manages worktrees, timeouts, telemetry, and the
+  SKILL injection. Exposes one tool: **`delegate_to_antigravity`**.
+- **`isolation.py`** — git worktree create / commit / merge-or-discard.
+- **`telemetry.py`** — logs every invocation to a per-workspace SQLite DB.
+- **`SKILL.md`** — the output contract handed to the sub-agent on every call.
+
+### The output contract
+
+The sub-agent is instructed to end with a single, short JSON object — **two fields only**:
+
+```json
+{ "status": "completed" | "failed", "summary": "<one factual sentence>" }
+```
+
+`files_changed` is **not** requested from the model — the bridge derives it from
+`git show --name-only` on the worktree commit. This is deliberate: agents frequently truncate long
+JSON, and tying success to a model-serialized file list made runs flaky. A run is **`completed`**
+when the worktree has committed changes and the agent did not explicitly self-report `failed`.
+
+---
 
 ## 🚀 Installation
 
-This project uses modern Python standards, managed by [uv](https://docs.astral.sh/uv/).
-
 ### Prerequisites
-- Python 3.10+
-- `uv` package manager installed
-- `git` installed and initialized in your target workspaces
+- **Python 3.10+**
+- **[uv](https://docs.astral.sh/uv/)** package manager
+- **git** (your target workspaces must be git repositories)
 
 ### Setup
-1. Clone this repository:
+
+```bash
+git clone <this-repo-url> claudavity
+cd claudavity
+
+# Create the venv and install dependencies (mcp, google-antigravity, aiosqlite, pydantic)
+uv sync
+
+# (contributors only) install the lefthook/ruff pre-commit hooks
+uv run lefthook install
+```
+
+### Authentication ⚠️ (the non-obvious part)
+
+The `google-antigravity` **SDK** authenticates with a **Gemini API key** (or Vertex AI / ADC). It
+**does NOT reuse the `agy` CLI's OAuth login** (`~/.gemini/oauth_creds.json`). So "logging into
+Antigravity" in the CLI does *not* authenticate this bridge — you must provide a key.
+
+1. Get a free key at <https://aistudio.google.com/app/apikey>.
+2. Copy the template and paste your key (the `.env` file is gitignored — your key never gets committed):
    ```bash
-   git clone https://github.com/yourusername/agy-mcp-bridge.git
-   cd agy-mcp-bridge
-   ```
-2. Sync the dependencies and create a virtual environment using `uv`:
-   ```bash
-   uv sync
-   ```
-3. (Optional for Contributors) Install the pre-commit hooks. This project uses `lefthook` and `ruff` to auto-format and lint code on commit:
-   ```bash
-   uv run lefthook install
-   ```
-4. **Injecting the SKILL Protocol**: What is `SKILL.md` and why is it needed?
-   The `SKILL.md` file contains a set of hardcoded system instructions that govern the background sub-agent. Without it, the sub-agent might respond with conversational text, markdown formatting, or open-ended questions. `SKILL.md` enforces a strict rule: **the sub-agent must only output a deterministic, machine-readable JSON schema**. This protects the master agent from context bloat and ensures the MCP server can predictably parse the task result.
-   
-   For any target workspace you want the bridge to operate on, you must copy the provided `SKILL.md` from this repository into the target workspace:
-   ```bash
-   # Inside your target project workspace
-   mkdir -p .agent/mcp_bridge
-   cp /path/to/claudavity/SKILL.md .agent/mcp_bridge/SKILL.md
+   cp .env.example .env
+   # edit .env and set GEMINI_API_KEY=...
    ```
 
-## 🔌 Registering as an MCP Server
+The bridge loads `GEMINI_API_KEY` from this `.env` at launch (via `uv run --env-file .env`, below),
+so the secret stays out of your MCP config files.
 
-To use this bridge, you must configure your AI CLI (e.g., `claude-cli` or `antigravity-cli`) to load it as an MCP server.
+### SKILL.md — centralized, no copying needed
 
-### For `claude-cli` (or Claude Desktop)
-Add the following configuration to your MCP settings file (usually `claude_desktop_config.json` or `mcp.json` depending on your CLI wrapper):
+`SKILL.md` ships **inside this repo** and the bridge injects it automatically on every delegation.
+**You do not copy it into your projects.** It is bridge-exclusive — the master agent never discovers
+it as one of its own skills.
+
+To override the contract for a specific workspace, drop a file at
+`<target_workspace>/.agent/mcp_bridge/SKILL.md`; the bridge prefers that path if it exists, otherwise
+it uses the canonical one in this repo.
+
+---
+
+## 🔌 Registering the bridge
+
+> **Two separate MCP hosts — don't confuse them.** Claude Code and `agy` each read their *own* MCP
+> config. Registering in one does **not** make the tool available in the other. For the intended
+> design (Claude is the master that calls `delegate_to_antigravity`), register it with **Claude Code**.
+> Registering it only in `agy` means "agy delegating to a nested Antigravity".
+
+In every example below, replace `ABS/PATH/TO/claudavity` with the absolute path to your clone. On
+Windows, use forward slashes (e.g. `C:/Users/you/Development/claudavity`) and the absolute path to
+`uv.exe` (e.g. `C:/Users/you/.local/bin/uv.exe`).
+
+### A) Claude Code (master) — recommended
+
+Use the CLI (no secret stored in the config; the key is read from `.env`):
+
+```bash
+claude mcp add agy-mcp-bridge -s user -- \
+  uv run --directory ABS/PATH/TO/claudavity --env-file ABS/PATH/TO/claudavity/.env python server.py
+```
+
+Then **restart Claude Code** (MCP servers load at session start) and verify:
+
+```bash
+claude mcp list          # expect: agy-mcp-bridge ✔ Connected
+```
+
+Equivalent manual entry (in `~/.claude.json` user scope, or a project `.mcp.json`):
 
 ```json
 {
@@ -64,78 +152,158 @@ Add the following configuration to your MCP settings file (usually `claude_deskt
     "agy-mcp-bridge": {
       "command": "uv",
       "args": [
-        "--directory",
-        "/absolute/path/to/claudavity",
-        "run",
-        "python",
-        "server.py"
-      ],
-      "env": {
-        "GEMINI_API_KEY": "your-api-key-here"
-      }
+        "run", "--directory", "ABS/PATH/TO/claudavity",
+        "--env-file", "ABS/PATH/TO/claudavity/.env",
+        "python", "server.py"
+      ]
     }
   }
 }
 ```
 
-### For `antigravity-cli`
-Antigravity discovers MCP servers in its application data directory.
-To register it:
-1. Create a directory for the server: `~/.gemini/antigravity-cli/mcp/agy-mcp-bridge`
-2. In this directory, define your tool schemas and point the execution command to `uv run python server.py` in the `claudavity` directory.
+### B) antigravity-cli (`agy`)
 
-### 🔍 Verifying the Installation
+`agy` reads MCP servers from **`~/.gemini/config/mcp_config.json` ONLY**. It silently **ignores**
+`~/.gemini/settings.json` `mcpServers` (that's plain gemini-cli's file) — a misconfigured server
+fails silently with no error and no log line. Add:
 
-Once configured, restart your CLI and verify the tool is loaded.
-
-**Claude CLI:**
-```bash
-# Example command depending on your specific CLI tool
-/mcp list
+```json
+{
+  "mcpServers": {
+    "agy-mcp-bridge": {
+      "command": "ABS/PATH/TO/uv.exe",
+      "args": [
+        "run", "--directory", "ABS/PATH/TO/claudavity",
+        "--env-file", "ABS/PATH/TO/claudavity/.env",
+        "python", "server.py"
+      ]
+    }
+  }
+}
 ```
-*(You should see `agy-mcp-bridge` listed with the `delegate_to_antigravity` tool).*
 
-**Antigravity CLI:**
-You can ask the agent to list its available tools, or look for the eager tool name:
-`mcp_agy-mcp-bridge_delegate_to_antigravity`.
+Then **restart `agy`**. On a successful connect, `agy` writes a per-tool schema cache at
+`~/.gemini/antigravity-cli/mcp/agy-mcp-bridge/` — the presence of that folder confirms it loaded
+(the `/mcp` UI lists it, somewhat confusingly, under a "Plugins" header).
 
-## 🧪 Testing the Integration
+> **Restart caveat:** both hosts hold `server.py` in memory for the life of the session. After you
+> change `server.py`, `isolation.py`, or `SKILL.md`, **restart the host** (Claude Code / `agy`) to
+> pick it up. The standalone test clients below always spawn a fresh `server.py`, so they don't need
+> a restart.
+>
+> **Cold start** is ~8s the first time (the `google-antigravity` import is heavy); subsequent calls
+> are fast.
 
-You don't need to configure an external MCP inspector to test if the bridge works. A standalone test client is included!
+---
 
-To run a mock delegation task:
+## 🧪 Testing
+
+Two self-contained clients are included — no external MCP inspector required.
+
+### Real end-to-end test (drives the actual sub-agent)
+
+Requires a valid `GEMINI_API_KEY` in `.env`. It creates a throwaway git repo, runs a real
+delegation, verifies the file was created **and merged back**, then cleans up.
+
+```bash
+uv run python real_test_client.py
+```
+
+Expected tail:
+
+```
+==== JSON Result Payload ====
+{"status": "completed", "summary": "...", "files_changed": ["hello_from_subagent.txt"]}
+=============================
+VERIFIED: hello_from_subagent.txt merged into sandbox -> 'It works!\n'
+```
+
+### Mock test (no API key, no model call)
+
+Drives the worktree/merge plumbing with a canned response via the `MOCK_AGENT_RESPONSE` env var:
+
 ```bash
 uv run python test_client.py
 ```
-This will:
-1. Connect to `server.py` over `stdio`.
-2. Send a prompt to create a dummy text file.
-3. Spin up an isolated Git worktree (`.agent/worktrees/task-...`).
-4. Execute the sub-agent, merge the worktree, and return the final JSON payload.
 
-### Using the Official MCP Inspector
+### Optional: the official MCP Inspector
 
-If you prefer a visual interface to test the server's tools and observe the `stdio` communication, you can use the official `@modelcontextprotocol/inspector`. Because the server relies on standard `stdio` transport, it is fully compatible.
+Because the server uses standard `stdio` transport, the official inspector works directly:
 
-Run the inspector by wrapping the server command and passing your API key:
-
-**On Mac/Linux:**
 ```bash
-GEMINI_API_KEY="your-api-key-here" npx @modelcontextprotocol/inspector uv --directory /path/to/claudavity run python server.py
+# Mac/Linux
+npx @modelcontextprotocol/inspector \
+  uv run --directory ABS/PATH/TO/claudavity --env-file ABS/PATH/TO/claudavity/.env python server.py
 ```
 
-**On Windows (PowerShell):**
 ```powershell
-$env:GEMINI_API_KEY="your-api-key-here"; npx @modelcontextprotocol/inspector uv --directory /path/to/claudavity run python server.py
+# Windows (PowerShell)
+npx @modelcontextprotocol/inspector `
+  uv run --directory ABS/PATH/TO/claudavity --env-file ABS/PATH/TO/claudavity/.env python server.py
 ```
-*(Replace `/path/to/claudavity` with the absolute path to your cloned repository)*
-
-This will launch a local web app where you can manually invoke the `delegate_to_antigravity` tool and watch the real-time execution logs.
-
-## 📊 Telemetry & Governance
-
-- **Governance (`SKILL.md`)**: The sub-agent is strictly governed by `.agent/mcp_bridge/SKILL.md`. This forces the sub-agent to return a precise JSON schema, suppressing conversational bloat. By keeping it outside the `.agent/skills/` directory, the master agent will not accidentally discover or load it.
-- **Metrics (`telemetry.db`)**: Every invocation is logged to a local SQLite database in `.agent/telemetry.db` containing run times, token usage, circuit breaker timeouts, and final statuses.
 
 ---
-*Built for local Windows development and headless Linux production servers.*
+
+## 🛠️ Using the tool
+
+Once registered with your master agent, invoke (or let the agent invoke) **`delegate_to_antigravity`**:
+
+| Argument          | Type    | Required | Description                                          |
+| ----------------- | ------- | -------- | ---------------------------------------------------- |
+| `task_prompt`     | string  | yes      | The strict, self-contained instruction for the sub-agent. |
+| `target_dir`      | string  | yes      | Absolute path to the target **git** workspace.       |
+| `timeout_seconds` | integer | no (120) | Circuit-breaker limit; the run fails if exceeded.    |
+
+Returns one JSON object:
+
+```json
+{ "status": "completed", "summary": "…", "files_changed": ["relative/path", "…"] }
+```
+
+…or on failure:
+
+```json
+{ "status": "failed", "error": "…reason (timeout / no changes / explicit failure / system error)…" }
+```
+
+**Tips for good results:** keep tasks small and unambiguous; the sub-agent is told to do exactly what
+is asked and nothing more (no incidental refactors). If the target repo has uncommitted changes you
+want excluded from the sub-agent's view, commit or stash them first — the worktree branches from the
+current `HEAD`.
+
+---
+
+## 📊 Telemetry & files on disk
+
+Per target workspace, under `<target_dir>/.agent/` (all gitignored by this repo's `.gitignore`):
+
+- **`telemetry.db`** — SQLite log of every invocation: `task_id`, `prompt`, start/end time, status,
+  `tokens_used`, `final_error`.
+- **`server.log`** — debug log from the bridge.
+- **`worktrees/task-<id>/`** — the transient isolation worktree (removed after each run).
+
+> Add the same three patterns to your *target project's* `.gitignore` so bridge artifacts don't get
+> committed there:
+> ```
+> .agent/telemetry.db
+> .agent/worktrees/
+> .agent/server.log
+> ```
+
+---
+
+## 🩺 Troubleshooting
+
+| Symptom | Likely cause / fix |
+| --- | --- |
+| Tool not listed in `agy` (no error) | Registered in `settings.json` instead of `~/.gemini/config/mcp_config.json`. Move it; restart `agy`; check for `~/.gemini/antigravity-cli/mcp/agy-mcp-bridge/`. |
+| Tool not listed in Claude Code | MCP loads at session start — **restart Claude Code**. Verify with `claude mcp list`. |
+| `can't open file 'server.py'` | The process cwd wasn't the repo. Always use `uv run --directory ABS/PATH/TO/claudavity …` (don't rely on relative `args:["server.py"]`). |
+| Auth / 401 / "API key" errors | `GEMINI_API_KEY` not loaded. Confirm `.env` exists with a real key and the config uses `--env-file …/.env`. The SDK does **not** use `agy`'s OAuth. |
+| `status: failed`, "no committed changes" | The sub-agent didn't modify any files (or the task was a no-op). Check `summary`/`server.log`. |
+| Code changes seem ignored | The host cached the old `server.py`. Restart the host (see the restart caveat). |
+| Merge conflict on a task | The branch `agy-task-<id>` is preserved for manual review; the merge is aborted so your workspace stays clean. |
+
+---
+
+*Built for local Windows development and headless Linux servers.*
