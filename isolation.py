@@ -46,7 +46,14 @@ async def commit_worktree(target_dir: str, task_id: str) -> list[str]:
     This is the source of truth for "did the task do work" — git history, not the
     agent's self-reported JSON, which it frequently truncates (e.g. ends its turn
     mid-`files_changed`). Committing here lets the caller derive the outcome from disk
-    and makes the subsequent merge in cleanup_worktree a no-op on the commit side."""
+    and makes the subsequent merge in cleanup_worktree a no-op on the commit side.
+
+    The commit runs with `--no-verify`: this is an internal transport commit on a
+    throwaway branch, and target repos commonly install a blocking `pre-commit` hook
+    (e.g. lefthook `pnpm verify:fast`). Without bypassing it the hook silently fails
+    the commit, leaving the branch unchanged so the later merge is a no-op — the
+    sub-agent's work is discarded but reported as success. The human/master agent still
+    gates the eventual push (e.g. `pre-push` verify:full)."""
     worktree_path = os.path.join(target_dir, ".agent", "worktrees", f"task-{task_id}")
     if not os.path.exists(worktree_path):
         return []
@@ -56,16 +63,21 @@ async def commit_worktree(target_dir: str, task_id: str) -> list[str]:
     if not status_out.strip():
         return []
 
-    await run_git_command(
+    code, _, err = await run_git_command(
         worktree_path,
         "-c",
         "user.email=agy@bridge",
         "-c",
         "user.name=agy-subagent",
         "commit",
+        "--no-verify",
         "-m",
         f"agy task {task_id}",
     )
+    if code != 0:
+        # Commit genuinely failed — never report phantom success on a no-op branch.
+        raise RuntimeError(f"Worktree commit failed for task {task_id}: {err.strip()}")
+
     _, files_out, _ = await run_git_command(
         worktree_path, "show", "--name-only", "--format=", "HEAD"
     )
@@ -93,6 +105,7 @@ async def cleanup_worktree(target_dir: str, task_id: str, success: bool = False)
                 "-c",
                 "user.name=agy-subagent",
                 "commit",
+                "--no-verify",  # internal transport commit; bypass target-repo hooks
                 "-m",
                 f"agy task {task_id}",
             )
