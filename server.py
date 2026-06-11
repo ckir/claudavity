@@ -9,7 +9,7 @@ import mcp.types as types
 from google.antigravity import Agent, LocalAgentConfig
 
 from telemetry import init_db, log_start, log_completion
-from isolation import create_worktree, cleanup_worktree
+from isolation import create_worktree, cleanup_worktree, commit_worktree
 
 # Canonical skill governing the sub-agent's JSON output contract. Injected on every
 # delegation unless the target workspace ships its own override (see handle_call_tool).
@@ -152,9 +152,9 @@ async def handle_call_tool(
             config = LocalAgentConfig(
                 system_instructions=(
                     "You are a headless execution sub-agent. Execute the delegated "
-                    "task on disk, then reply with ONLY a single JSON object: "
-                    '{"status": "completed"|"failed", "summary": "...", '
-                    '"files_changed": [...]}. No prose, no markdown fences.'
+                    "task on disk, then reply with ONLY a single short JSON object: "
+                    '{"status": "completed"|"failed", "summary": "..."}. '
+                    "Two fields only — do not list changed files. No prose, no fences."
                 ),
                 skills_paths=[skill_path],
                 workspaces=[worktree_path],
@@ -170,27 +170,50 @@ async def handle_call_tool(
                         agy_sub_agent.chat(f"Execute: {task_prompt}"),
                         timeout=timeout_seconds,
                     )
-
                     result_text = await response.text()
-                    try:
-                        parsed = extract_json(result_text)
-                        result_text = json.dumps(parsed)  # normalize to clean JSON
-                        if parsed.get("status") == "completed":
-                            success = True
-                        else:
-                            error_payload = f"Agent reported failure: {parsed.get('summary') or parsed}"
-                    except json.JSONDecodeError:
-                        logging.error(
-                            f"Task {task_id}: unparseable agent output (full): {result_text!r}"
-                        )
-                        error_payload = (
-                            "Agent did not return valid JSON. Output: "
-                            + result_text[:200]
-                        )
-
                 except asyncio.TimeoutError:
                     error_payload = f"Circuit breaker timeout after {timeout_seconds}s."
                     logging.error(f"Task {task_id}: Timeout")
+
+            # Outcome is derived from committed git changes, NOT the model's
+            # self-reported JSON — the agent frequently truncates its final object
+            # (ending its turn mid-`files_changed`), which previously failed runs
+            # whose work had actually succeeded on disk. The agent text now only
+            # supplies a best-effort summary / an explicit failure self-report.
+            if error_payload is None:
+                agent_status = None
+                agent_summary = None
+                try:
+                    parsed = extract_json(result_text)
+                    agent_status = parsed.get("status")
+                    agent_summary = parsed.get("summary")
+                except json.JSONDecodeError:
+                    logging.warning(
+                        f"Task {task_id}: agent JSON unparseable/truncated; "
+                        f"deriving outcome from git. Raw: {result_text!r}"
+                    )
+
+                files_changed = await commit_worktree(target_dir, task_id)
+
+                if agent_status == "failed":
+                    # Honor an explicit, parseable failure self-report.
+                    error_payload = (
+                        f"Agent reported failure: {agent_summary or result_text[:200]}"
+                    )
+                elif files_changed:
+                    success = True
+                    result_text = json.dumps(
+                        {
+                            "status": "completed",
+                            "summary": agent_summary
+                            or "Sub-agent completed (summary unavailable — truncated output).",
+                            "files_changed": files_changed,
+                        }
+                    )
+                else:
+                    error_payload = (
+                        "Agent produced no committed changes in the worktree."
+                    )
 
     except Exception as e:
         logging.error(f"Task {task_id}: Exception {str(e)}")

@@ -39,6 +39,39 @@ async def create_worktree(target_dir: str, task_id: str) -> str:
     return worktree_path
 
 
+async def commit_worktree(target_dir: str, task_id: str) -> list[str]:
+    """Stage and commit everything the sub-agent left in its worktree, returning the
+    repo-relative paths in that commit. Returns [] if the agent changed nothing.
+
+    This is the source of truth for "did the task do work" — git history, not the
+    agent's self-reported JSON, which it frequently truncates (e.g. ends its turn
+    mid-`files_changed`). Committing here lets the caller derive the outcome from disk
+    and makes the subsequent merge in cleanup_worktree a no-op on the commit side."""
+    worktree_path = os.path.join(target_dir, ".agent", "worktrees", f"task-{task_id}")
+    if not os.path.exists(worktree_path):
+        return []
+
+    await run_git_command(worktree_path, "add", "-A")
+    _, status_out, _ = await run_git_command(worktree_path, "status", "--porcelain")
+    if not status_out.strip():
+        return []
+
+    await run_git_command(
+        worktree_path,
+        "-c",
+        "user.email=agy@bridge",
+        "-c",
+        "user.name=agy-subagent",
+        "commit",
+        "-m",
+        f"agy task {task_id}",
+    )
+    _, files_out, _ = await run_git_command(
+        worktree_path, "show", "--name-only", "--format=", "HEAD"
+    )
+    return [line.strip() for line in files_out.splitlines() if line.strip()]
+
+
 async def cleanup_worktree(target_dir: str, task_id: str, success: bool = False):
     branch_name = f"agy-task-{task_id}"
     worktree_path = os.path.join(target_dir, ".agent", "worktrees", f"task-{task_id}")

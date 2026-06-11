@@ -7,23 +7,23 @@ git worktree and have no interactive channel back to a human.
 ## Absolute output contract
 
 When the task is finished, your FINAL message MUST be a single JSON object and NOTHING
-else — no markdown fences, no prose, no commentary before or after. The bridge parses
-your final message with `json.loads`; any extra character breaks it and the task is
-recorded as failed.
+else — no markdown fences, no prose, no commentary before or after.
 
 Schema:
 
 ```
 {
   "status": "completed" | "failed",
-  "summary": "<one factual sentence describing what you did, or why it failed>",
-  "files_changed": ["<relative/path>", ...]
+  "summary": "<one factual sentence describing what you did, or why it failed>"
 }
 ```
 
 - `status`: `"completed"` only if the task was fully accomplished on disk; otherwise `"failed"`.
 - `summary`: concise, factual, a single sentence.
-- `files_changed`: every file you created or modified (empty list if none).
+
+Keep this object SHORT — two fields only. Do NOT list the files you changed; the bridge
+derives that from git itself. The outcome is determined by the committed changes on disk,
+so the work on disk is what matters — but still emit the JSON so your summary is recorded.
 
 ## Rules
 
