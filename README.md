@@ -41,7 +41,7 @@ the master agent's context and is flaky to drive over a terminal/PTY. claudavity
   └────────────────────┘                                                └────────┬─────────┘
                                                                                   │ 1. git worktree add (throwaway branch)
                                                                                   │ 2. run google-antigravity Agent in the worktree,
-                                                                                  │    injecting SKILL.md (JSON output contract)
+                                                                                  │    injecting SKILL.md + MCP servers (agentmemory)
                                                                                   │ 3. commit the worktree → derive files_changed from git
                                                                                   │ 4. changes present? → merge branch back  (status: completed)
                                                                                   │    no changes / failure / timeout? → discard (status: failed)
@@ -49,8 +49,9 @@ the master agent's context and is flaky to drive over a terminal/PTY. claudavity
                                                                        returns {"status","summary","files_changed"}
 ```
 
-- **`server.py`** — the MCP server (stdio transport). Manages worktrees, timeouts, telemetry, and the
-  SKILL injection. Exposes one tool: **`delegate_to_antigravity`**.
+- **`server.py`** — the MCP server (stdio transport). Manages worktrees, timeouts, telemetry, the
+  SKILL injection, and the sub-agent's MCP wiring (`_build_mcp_servers()`). Exposes one tool:
+  **`delegate_to_antigravity`**.
 - **`isolation.py`** — git worktree create / commit / merge-or-discard.
 - **`telemetry.py`** — logs every invocation to a per-workspace SQLite DB.
 - **`SKILL.md`** — the output contract handed to the sub-agent on every call.
@@ -67,6 +68,28 @@ The sub-agent is instructed to end with a single, short JSON object — **two fi
 `git show --name-only` on the worktree commit. This is deliberate: agents frequently truncate long
 JSON, and tying success to a model-serialized file list made runs flaky. A run is **`completed`**
 when the worktree has committed changes and the agent did not explicitly self-report `failed`.
+
+### MCP tools for the sub-agent
+
+By default the delegated sub-agent is wired to the **agentmemory** MCP server, giving it the same
+shared cross-agent memory the interactive `agy` CLI has. Delegated tasks can `memory_recall`
+relevant context before acting and `memory_save` durable findings — so work done in isolation
+isn't amnesiac. (Without this, the sub-agent runs with *only* the Antigravity SDK's built-in tools
+and no MCP — it can't reach the shared store at all.)
+
+- **Configured in `server.py`** via `_build_mcp_servers()`, passed to
+  `LocalAgentConfig(mcp_servers=…)`. The launcher is platform-aware: on Windows
+  `cmd /c npx @agentmemory/agentmemory mcp` (a bare `npx` can't be spawned as a native process —
+  it's a `.cmd` shim with no `.exe`), elsewhere `npx …` directly. The launched server proxies to the
+  agentmemory daemon (`http://localhost:3111`) or its standalone store.
+- **Opt out:** set `AGY_BRIDGE_NO_MCP=1` to delegate with no MCP servers (the original behavior).
+  This matters because the SDK **aborts sub-agent startup if an enabled MCP server fails to
+  connect** — so if the daemon/`npx` is unavailable, either start it or set this flag.
+- **Safety:** wiring MCP does not loosen the sandbox. The default policies (`workspace_only` +
+  `confirm_run_command`) keep file writes scoped to the worktree and gate `run_command`; MCP tool
+  calls fall through to the SDK's default-open decision, so no extra allow-rule is required.
+- **Extending:** add more servers (e.g. `serena`) by returning additional `McpStdioServer` /
+  `McpStreamableHttpServer` entries from `_build_mcp_servers()`.
 
 ---
 
@@ -302,6 +325,7 @@ Per target workspace, under `<target_dir>/.agent/` (all gitignored by this repo'
 | Auth / 401 / "API key" errors | `GEMINI_API_KEY` not loaded. Confirm `.env` exists with a real key and the config uses `--env-file …/.env`. The SDK does **not** use `agy`'s OAuth. |
 | `status: failed`, "no committed changes" | The sub-agent didn't modify any files (or the task was a no-op). Check `summary`/`server.log`. |
 | Code changes seem ignored | The host cached the old `server.py`. Restart the host (see the restart caveat). |
+| Delegation fails immediately / MCP connect error | An enabled MCP server (default: `agentmemory`) couldn't start or connect — the SDK aborts sub-agent startup on a failed MCP connect. Start the agentmemory daemon (`:3111`) / ensure `npx` resolves, or set `AGY_BRIDGE_NO_MCP=1` to delegate without MCP. |
 | Merge conflict on a task | The branch `agy-task-<id>` is preserved for manual review; the merge is aborted so your workspace stays clean. |
 
 ---
