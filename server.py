@@ -7,6 +7,7 @@ from mcp.server.stdio import stdio_server
 from mcp.server import Server
 import mcp.types as types
 from google.antigravity import Agent, LocalAgentConfig
+from google.antigravity.types import McpServerConfig, McpStdioServer
 
 from telemetry import init_db, log_start, log_completion
 from isolation import create_worktree, cleanup_worktree, commit_worktree
@@ -63,6 +64,40 @@ def extract_json(text: str) -> dict:
                 return json.loads(text[start : i + 1])
 
     raise json.JSONDecodeError("no balanced JSON object in agent output", text, start)
+
+
+def _build_mcp_servers() -> list[McpServerConfig]:
+    """MCP servers exposed to the delegated sub-agent.
+
+    By default the sub-agent runs with ONLY the Antigravity SDK's built-in tools
+    (file ops, run_command, …) and no MCP — so it cannot reach the shared
+    agentmemory store or any other MCP tool the interactive `agy` CLI has. Wiring
+    servers here gives delegated tasks parity. Tool calls fall through to the
+    SDK's default-open policy (the existing workspace_only + confirm_run_command
+    policies don't match MCP tools), so the wired tools are usable without adding
+    an explicit allow policy.
+
+    Default: agentmemory (shared cross-agent memory). On Windows `npx` is a `.cmd`
+    shim with no `.exe`, so it must be launched via `cmd /c` (native process spawn
+    can't resolve a bare `npx`); elsewhere `npx` is invoked directly. The launched
+    `… mcp` process connects to the running agentmemory daemon (:3111) or falls
+    back to its standalone store.
+
+    Escape hatch: set AGY_BRIDGE_NO_MCP=1 to restore the previous MCP-less
+    behavior (e.g. if the daemon/npx is unavailable and connection setup would
+    otherwise fail the delegation, since the SDK aborts startup on a failed MCP
+    connect).
+    """
+    if os.environ.get("AGY_BRIDGE_NO_MCP", "").strip().lower() in ("1", "true", "yes"):
+        logging.info("AGY_BRIDGE_NO_MCP set — delegating without MCP servers")
+        return []
+
+    if os.name == "nt":
+        command, args = "cmd", ["/c", "npx", "@agentmemory/agentmemory", "mcp"]
+    else:
+        command, args = "npx", ["@agentmemory/agentmemory", "mcp"]
+
+    return [McpStdioServer(name="agentmemory", command=command, args=args)]
 
 
 server = Server("agy-mcp-bridge")
@@ -152,12 +187,16 @@ async def handle_call_tool(
             config = LocalAgentConfig(
                 system_instructions=(
                     "You are a headless execution sub-agent. Execute the delegated "
-                    "task on disk, then reply with ONLY a single short JSON object: "
+                    "task on disk. MCP tools may be available (e.g. agentmemory "
+                    "memory_recall/memory_save) — recall relevant shared context "
+                    "before acting and save durable cross-agent knowledge when useful. "
+                    "When done, reply with ONLY a single short JSON object: "
                     '{"status": "completed"|"failed", "summary": "..."}. '
                     "Two fields only — do not list changed files. No prose, no fences."
                 ),
                 skills_paths=[skill_path],
                 workspaces=[worktree_path],
+                mcp_servers=_build_mcp_servers(),
             )
 
             logging.info(f"Task {task_id}: Instantiating Agent")
